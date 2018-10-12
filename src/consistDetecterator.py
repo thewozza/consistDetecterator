@@ -1,9 +1,8 @@
 #!/usr/bin/python
 
-import subprocess, platform
+import subprocess
 from datetime import datetime
 import csv
-import socket
 from netmiko import ConnectHandler
 from netmiko.ssh_exception import NetMikoTimeoutException,NetMikoAuthenticationException
 import time
@@ -15,7 +14,7 @@ def validate_ipaddress(ip):
     try:
         ipaddress.ip_address(ip)
         return True
-    except ValueError as errorCode:
+    except ValueError:
         #uncomment below if you want to display the exception message.
         #print(errorCode)
         #comment below if above is uncommented.
@@ -63,6 +62,7 @@ def consistDetector(sourceAddr):
         time.sleep(1)
         ospfCommand = "show ospf neighbor vlan " + str(77)
         ospf77 = net_connect.send_command(ospfCommand).split('\n')[-1].split(' ')[0]
+        # sometimes out output sucks, so we do some error handling
         try:
             if validate_ipaddress(ospf77):
                 print "We got OSPF 77"
@@ -73,6 +73,7 @@ def consistDetector(sourceAddr):
         time.sleep(1)
         ospfCommand = "show ospf neighbor vlan " + str(88)
         ospf88 = net_connect.send_command(ospfCommand).split('\n')[-1].split(' ')[0]
+        # sometimes out output sucks, so we do some error handling
         try:
             if validate_ipaddress(ospf88):
                 print "We got OSPF 88"
@@ -84,8 +85,6 @@ def consistDetector(sourceAddr):
         # we always sanely disconnect
         net_connect.disconnect()
         print "Disconnected from " + sourceAddr
-        # we use this as row data in the output
-        currentTime = str(datetime.time(datetime.now()))
         
         for assetNum in consistAll:
             if sourceAddr in consistAll[assetNum]['SW0']:
@@ -95,6 +94,8 @@ def consistDetector(sourceAddr):
                 localAsset = str(assetNum)
                 break
         
+        # this data structure contains the actual train layout
+        # it's a history so we know where we've been
         consistActual[localAsset] = {}
         consistActual[localAsset]['IP'] = sourceAddr
         
@@ -112,17 +113,19 @@ def consistDetector(sourceAddr):
                     break
             for assetNum in consistActual:
                 if ospf77Asset == assetNum:
+                    # okay if our current asset is in the list of assets
+                    # we've visited, we know we've been there so we skip it
                     beenHere77 = True
                     break
             if not beenHere77:
                 consistActual[localAsset]['Vl77'] = ospf77Asset
         else:
+            # it is possible that there's just nothing there, so we record that
             ospf77Asset = ""
         
         beenHere88 = False        
         # if there's no ospf peer we just skip the ping test
         if ospf88:
-            
             for assetNum in consistAll:
                 if ospf88 == consistAll[assetNum]['SW0']:
                     ospf88Asset = str(assetNum)
@@ -132,11 +135,14 @@ def consistDetector(sourceAddr):
                     break
             for assetNum in consistActual:
                 if ospf88Asset == assetNum:
+                    # okay if our current asset is in the list of assets
+                    # we've visited, we know we've been there so we skip it
                     beenHere88 = True
                     break
             if not beenHere88:
                 consistActual[localAsset]['Vl88'] = ospf88Asset
         else:
+            # it is possible that there's just nothing there, so we record that
             ospf88Asset = ""
             
         # append to master CSV        
@@ -153,12 +159,17 @@ def consistDetector(sourceAddr):
         csvfile.close()
         print "Written to CSV"
         
-        if not beenHere77:
-            time.sleep(1)
-            consistDetector(ospf77)
-        if not beenHere88:
-            time.sleep(1)
-            consistDetector(ospf88)
+        # this is the recursive scary stuff
+        # hopefully I've been careful enought to make sure this doesn't loop
+        # forever and ever
+        if ospf77:
+            if not beenHere77:
+                time.sleep(1)
+                consistDetector(ospf77)
+        if ospf88:
+            if not beenHere88:
+                time.sleep(1)
+                consistDetector(ospf88)
 
     except NetMikoTimeoutException,NetMikoAuthenticationException:
         return
@@ -198,6 +209,9 @@ global sourceAsset
 for asset, assetData in sorted(consistBrains.items()):
     # we make sure we can ping the switch before we do anything else
     sourceAsset = asset
+    
+    # right now we're only starting from SW0 on each brain car
+    # this is to keep things simple
     if check_ping(assetData['SW0']):
         print "We can ping " + assetData['SW0']
         consistDetector(assetData['SW0'])
